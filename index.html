@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wild Duck Flight Simulator</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600&family=Source+Sans+3:wght@400;600&family=IBM+Plex+Mono&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<main class="stage">
+  <canvas id="scene" aria-label="Live scene of wild ducks flying over a wetland"></canvas>
+  <h1 class="scene-title">Wild Duck Flight Simulator</h1>
+  <div class="dfs-toast" id="toast" aria-live="polite"><span class="dfs-live"></span><span id="log">Watching the wetland…</span></div>
+  <div class="shot-card" id="shot-card" aria-live="assertive" hidden><b id="shot-head"></b><span id="shot-detail"></span></div>
+  <div class="hud" id="hud"><span id="gun-state">Low ready</span><span class="shells" id="shells" aria-label="Shells loaded"></span></div>
+
+  <form class="dfs-panel" id="panel" onsubmit="return false" aria-label="Simulator controls">
+    <header>
+      <h2>Field controls</h2>
+      <button type="button" class="toggle" id="toggle" aria-expanded="true" aria-controls="panel-body">Hide</button>
+    </header>
+    <div class="body" id="panel-body">
+      <div class="dfs-field">
+        <div class="dfs-label"><span id="freq-l">Duck frequency</span><span class="dfs-value" id="freq-v"></span></div>
+        <div class="dfs-range" id="freq" data-min="1" data-max="60" data-step="1">
+          <div class="track"></div><div class="fill"></div>
+          <input type="range" aria-label="Minimum ducks per minute">
+          <input type="range" aria-label="Maximum ducks per minute">
+        </div>
+        <div class="dfs-hint" id="freq-h"></div>
+      </div>
+
+      <div class="dfs-field">
+        <div class="dfs-label"><span>Flight speed</span><span class="dfs-value" id="speed-v"></span></div>
+        <div class="dfs-range" id="speed" data-min="0.5" data-max="2" data-step="0.05">
+          <div class="track"></div><div class="fill"></div>
+          <input type="range" aria-label="Minimum speed multiplier">
+          <input type="range" aria-label="Maximum speed multiplier">
+        </div>
+        <div class="dfs-hint" id="speed-h"></div>
+      </div>
+
+      <div class="dfs-field">
+        <div class="dfs-label"><span>Environment</span><span class="dfs-value" id="env-v"></span></div>
+        <div class="dfs-envs" role="group" aria-label="Environment">
+          <button type="button" class="dfs-env" data-env="wetland"><span class="thumb wetland"></span><span class="name">Wetland</span></button>
+          <button type="button" class="dfs-env" data-env="lake"><span class="thumb lake"></span><span class="name">Lake</span></button>
+          <button type="button" class="dfs-env" data-env="dusk"><span class="thumb dusk"></span><span class="name">Marsh at dusk</span></button>
+          <button type="button" class="dfs-env" data-env="field"><span class="thumb field"></span><span class="name">Flooded field</span></button>
+        </div>
+      </div>
+
+      <div class="dfs-field">
+        <div class="dfs-label"><span>Species</span><span class="dfs-value" id="sp-v"></span></div>
+        <div class="dfs-chips" id="species" role="group" aria-label="Species mix"></div>
+      </div>
+
+      <div class="dfs-field">
+        <div class="dfs-label"><span>Practice</span><span class="dfs-value" id="stats">0 birds · 0 shots</span></div>
+        <div class="dfs-chips">
+          <button type="button" class="dfs-chip" id="snd" aria-pressed="true">Sound</button>
+          <button type="button" class="dfs-chip" id="ghost" aria-pressed="true">Show lead</button>
+          <button type="button" class="dfs-chip" id="reset" aria-pressed="false">Reset score</button>
+        </div>
+        <div class="dfs-label" style="margin-top:var(--space-4)"><span>Volume</span><span class="dfs-value" id="vol-v"></span></div>
+        <div class="dfs-range" id="vol"><div class="track"></div><div class="fill"></div><input type="range" min="0" max="100" step="1" aria-label="Volume"></div>
+        <div class="dfs-hint">Hold the right mouse button (or press M) to mount the gun, swing through the bird, click to fire. Three shells; lower the gun to reload. With the gun down, click anywhere (or press F) to send ducks in from a random direction. P pauses.</div>
+      </div>
+
+      <div class="actions">
+        <button type="button" class="dfs-btn" id="flush">Send ducks</button>
+        <button type="button" class="dfs-btn quiet" id="pause">Pause</button>
+        <button type="button" class="dfs-btn quiet" id="full">Full screen</button>
+      </div>
+    </div>
+  </form>
+</main>
+<script src="js/species.js"></script>
+<script src="js/audio.js"></script>
+<script src="js/scene.js"></script>
+<script src="js/main.js"></script>
+</body>
+</html>
