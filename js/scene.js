@@ -19,7 +19,24 @@
     const n = parseInt(h.slice(0, 6), 16);
     return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
   }
-  const S = (c, f = 1, a = 1) => `rgba(${c.map(v => clamp(Math.round(v * f), 0, 255)).join(',')},${a})`;
+  const rgba = (c, f, a) => `rgba(${clamp(Math.round(c[0] * f), 0, 255)},${clamp(Math.round(c[1] * f), 0, 255)},${clamp(Math.round(c[2] * f), 0, 255)},${a})`;
+  // colours that live as long as a bird or a scene carry a small string cache (c._m), so drawing makes no garbage
+  const S = (c, f = 1, a = 1) => {
+    const m = c._m; if (!m) return rgba(c, f, a);
+    const k = Math.round(f * 997) * 1009 + Math.round(a * 1000);
+    let v = m.get(k); if (v === undefined) { v = rgba(c, f, a); if (m.size < 64) m.set(k, v); }
+    return v;
+  };
+  const keepCol = o => { for (const k in o) o[k]._m = new Map(); return o; };
+  const prune = (a, f) => { let j = 0; for (let i = 0; i < a.length; i++) if (f(a[i])) a[j++] = a[i]; a.length = j; return a; };
+  const alive = o => o.life > 0, notDone = o => !o.done, byZ = (a, b) => a.z - b.z;
+  // smooth wander: two incommensurate sines per channel, phases fixed per bird/flock (o.wp)
+  function wn(o, ch, t, f) {
+    let w = o.wp; if (!w) { w = o.wp = []; for (let i = 0; i < 16; i++) w.push(Math.random() * 6.28); }
+    const i = ch * 4;
+    return Math.sin(t * (.45 + .1 * Math.sin(w[i])) * f + w[i + 1]) * .65 + Math.sin(t * (1.15 + .2 * Math.sin(w[i + 2])) * f + w[i + 3]) * .35;
+  }
+  const smooth = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
   const M = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t);
 
   DF.createScene = function (canvas, opts) {
@@ -44,7 +61,7 @@
     /* ---------- scene building ---------- */
     function build() {
       E = DF.ENVIRONMENTS[cfg.env];
-      P = { top: C(E.top), low: C(E.low), water: C(E.water), veg: C(E.veg) };
+      P = keepCol({ top: C(E.top), low: C(E.low), water: C(E.water), veg: C(E.veg) });
       const hy = H * E.horizon;
 
       tree = []; let x = -10;
@@ -70,6 +87,8 @@
           sh: R(.55, 1.15), cat: E.cattails && fg && Math.random() < .1, my: R(0, 6) * U });
       }
       blades.sort((a, b) => a.h - b.h);
+      const farVeg = M(P.veg, P.low, .3);
+      for (const b of blades) b.css = rgba(b.fg ? P.veg : farVeg, b.sh * (b.fg ? .8 : 1), 1);
       ducks = []; ripples = []; drops = []; feathers = []; fx = []; pending = []; shots = [];
       A && A.setEnv(cfg.env);
       bakeBackdrop();
@@ -102,6 +121,8 @@
       const sil = E.silhouette || 0, darkC = C('plumage-dark');
       for (const p in pick) { const f = R(.92, 1.08); col[p] = M(C(pick[p]).map(v => v * f), darkC, sil); }
       col.white = M([240, 238, 230], darkC, sil * .7);
+      col.under = M(col.wing, col.white, .3);
+      keepCol(col);
       const D = (o && o.D) || R(15, 45);
       const d = Object.assign({ k, s, hen, col, size: s.size * R(.93, 1.07), mul: R(cfg.speed[0], cfg.speed[1]),
         ph: R(0, 6.28), a: 0, state: 'cruise', t: 0, x: 0, y: 0, vx: 0, vy: 0, glide: 0, delay: 0, wob: R(0, 6.28),
@@ -286,7 +307,7 @@
         if (['cruise', 'approach', 'overfly', 'turn', 'flare'].includes(d.state)) {
           const b = base(d);
           if (Math.abs(d.vx) > 1) d.dir = Math.sign(d.vx);
-          d.state = 'cruise'; d.mul = Math.min(d.mul * 1.2, 2.2); d.tvy = -b * .5; d.ret = R(.8, 1.5); d.fl = null; d.glide = 0; d.cup = false;
+          d.state = 'cruise'; d.mul = Math.min(d.mul * 1.2, 2.2); d.boost = -b * .5; d.fl = null; d.glide = 0; d.cup = false;
         }
       }
       const sw = ducks.filter(d => d.state === 'swim' && !d.dead);
@@ -324,6 +345,9 @@
     function emitGun() { opts.onGun && opts.onGun({ mounted: gun.mounted, shells: gun.shells }); }
 
     /* ---------- simulation ---------- */
+    const STAY = new Set(['swim', 'dead', 'hit', 'pass', 'approach', 'overfly', 'turn', 'flare']);
+    const keepDuck = d => !d.gone && (d.state !== 'dead' || d.t < 10)
+      && (d.delay > 0 || STAY.has(d.state) || (d.x > -160 * U && d.x < W + 160 * U && d.y > -140 * U));
     function update(dt, t) {
       clock += dt;
       nextEvt -= dt;
@@ -341,29 +365,29 @@
             const k = Math.min(1, d.t / 2.2), ang = (70 - 55 * k) * Math.PI / 180, sp = b * (.35 + .65 * k), e = Math.min(1, dt * 4);
             d.vx += (d.dir * sp * Math.cos(ang) - d.vx) * e;
             d.vy += (-sp * Math.sin(ang) - d.vy) * e;
-            if (d.t > 2.2) { d.state = 'cruise'; d.tvy = -b * .15; d.ret = 1; }
+            if (d.t > 2.2) { d.state = 'cruise'; d.boost = -b * .15; }
             break;
           }
           case 'cruise': {
             d.vx += (d.dir * b - d.vx) * Math.min(1, dt * 1.5);
-            const tg = d.fl || d; tg.ret -= dt;
-            if (tg.ret <= 0) {
-              tg.ret = R(.4, 1.6) * (d.fl ? .6 : 1);
-              tg.tvy = R(-.5, .5) * b * (.08 + s.erratic * .35) - (d.y > hy - 70 * U ? b * .25 : 0) + (d.y < 40 * U ? b * .2 : 0);
-            }
-            d.vy += (tg.tvy - d.vy) * Math.min(1, dt * (d.fl ? 3 : 2));
+            const tg = d.fl || d, wf = 1 + s.erratic * 1.5;
+            const lowP = clamp((d.y - (hy - 110 * U)) / (60 * U), 0, 1) * b * .25, highP = clamp((70 * U - d.y) / (40 * U), 0, 1) * b * .2;
+            d.boost = (d.boost || 0) * Math.exp(-dt / 1.2);
+            const tvy = b * (.08 + s.erratic * .35) * .5 * (wn(tg, 0, clock, wf) * .8 + wn(d, 1, clock, wf) * .2) - lowP + highP + d.boost;
+            d.vy += (tvy - d.vy) * Math.min(1, dt * (d.fl ? 3 : 2));
             if (Math.random() < .04 * dt) sayCall(d, 'chatter');
             break;
           }
           case 'pass': {
             const v = s.kmh * FTPS_PER_KMH * d.mul, tg = d.fl || d;
-            tg.pret = (tg.pret || 0) - dt;
-            if (tg.pret <= 0) { tg.pret = R(.5, 1.8); tg.tvh = R(-1, 1) * v * (.02 + s.erratic * .12); tg.tyaw = R(-1, 1) * s.erratic * .2; }
-            const e = Math.min(1, dt * 1.5);
-            d.wvh += ((tg.tvh || 0) + d.climb - d.wvh) * e;
-            d.yo += ((tg.tyaw || 0) - d.yo) * e;
+            const wf = 1 + s.erratic * 1.5, e = Math.min(1, dt * 1.5);
+            const tvh = v * (.02 + s.erratic * .12) * (wn(tg, 0, clock, wf) * .8 + wn(d, 1, clock, wf) * .2);
+            const tyaw = s.erratic * .2 * (wn(tg, 2, clock, wf) * .8 + wn(d, 3, clock, wf) * .2);
+            const floor = clamp((10 - d.wH) / 6, 0, 1) * (v * .05 + Math.max(0, -d.wvh) * 1.2);   // level off softly near the water
+            d.wvh += (tvh + d.climb + floor - d.wvh) * Math.min(1, dt * (1.5 + 3 * (floor > 0)));
+            d.yo += (tyaw - d.yo) * e;
             const h = d.hd + d.yo, vX = Math.sin(h) * v, vZ = Math.cos(h) * v;
-            d.wX += vX * dt; d.wZ += vZ * dt; d.wH = Math.max(4, d.wH + d.wvh * dt);
+            d.wX += vX * dt; d.wZ += vZ * dt; d.wH = Math.max(2.5, d.wH + d.wvh * dt);
             project(d, dt);
             const ll = Math.hypot(d.wX, d.wH, d.wZ) || 1;
             d.los = (vX * d.wX + d.wvh * d.wH + vZ * d.wZ) / (ll * Math.hypot(v, d.wvh));   // +1 straight away, -1 straight at you
@@ -419,15 +443,26 @@
           continue;
         }
 
-        if (d.state === 'flare') { d.ph += dt * s.hz * 6.28 * 1.2; d.a = Math.sin(d.ph); }
-        else if (d.cup) { d.ph += dt * s.hz * 6.28 * .45; d.a = .72 + Math.sin(d.ph) * .18; }
-        else if (d.glide > 0) { d.glide -= dt; d.a += (.3 - d.a) * Math.min(1, dt * 10); }
+        if (d.state === 'flare') { d.ph += dt * s.hz * 6.28 * 1.2; d.a = Math.sin(d.ph); d.gw = d.cw = 0; d.bob *= .9; }
         else {
-          d.ph += dt * s.hz * hzm * 6.28;
-          d.a = Math.sin(d.ph + .25 * Math.sin(d.ph));
-          if ((d.state === 'cruise' || d.state === 'pass') && Math.random() < s.glide * dt * .5) d.glide = R(.4, .9);
+          if (d.glide > 0) d.glide -= dt;
+          else if ((d.state === 'cruise' || d.state === 'pass') && Math.random() < s.glide * dt * .5) d.glide = R(.4, .9);
+          d.gw = (d.gw || 0) + ((d.glide > 0 ? 1 : 0) - (d.gw || 0)) * Math.min(1, dt * 5);     // ease into / out of glides
+          d.cw = (d.cw || 0) + ((d.cup ? 1 : 0) - (d.cw || 0)) * Math.min(1, dt * 3);           // and into cupped wings
+          d.ph += dt * s.hz * hzm * 6.28 * (1 - .55 * d.cw) * (1 - .85 * d.gw);
+          const flap = Math.sin(d.ph + .25 * Math.sin(d.ph));
+          d.a = flap + (.3 - flap) * d.gw;
+          d.a += (.72 + Math.sin(d.ph) * .18 - d.a) * d.cw;
+          d.bob = .8 * Math.sin(d.ph - .4) * (1 - d.gw) * (1 - d.cw);   // body lifts on the downstroke
         }
         if (d.state !== 'pass') { d.x += d.vx * dt; d.y += d.vy * dt; }
+        // ---------- 2. orientation eased for drawing: pitch, bank, facing ----------
+        const pt = d.state === 'flare' ? -.55 : clamp(Math.atan2(d.vy, Math.max(Math.abs(d.vx), b * .5)), -1.1, .9);
+        const k6 = Math.min(1, dt * 6), rt = clamp(d.vx / (b + 1) * .5, -.35, .35);
+        d.pS = d.pS == null ? pt : d.pS + (pt - d.pS) * k6;
+        d.rS = d.rS == null ? rt : d.rS + (rt - d.rS) * k6;
+        if (Math.abs(d.vx) > b * .08) d.ft = Math.sign(d.vx); else if (d.ft == null) d.ft = d.dir;
+        d.fx = d.fx == null ? d.ft : d.fx + (d.ft - d.fx) * Math.min(1, dt * 7);   // a reversal rolls through edge-on
       }
 
       // shot pellets arriving
@@ -439,39 +474,39 @@
         const e = Math.hypot(d.x - p.ax, d.y - p.ay) / d.ppf, r = patternR(d.D) + .3 * d.size;
         if (e <= (d.D > 40 ? r * .7 : r)) { kill(d); p.shot.kills.push(d); }
       }
-      pending = pending.filter(p => !p.done);
+      prune(pending, notDone);
       for (const s of shots) if (!s.done && clock >= s.t + .3) { s.done = true; finalize(s); }
-      shots = shots.filter(s => !s.done);
+      prune(shots, notDone);
       if (spookAt && clock >= spookAt) { spookAt = 0; spook(); }
 
-      ducks = ducks.filter(d => !d.gone && (d.state === 'dead' ? d.t < 10 : true) && (d.state === 'swim' || d.state === 'dead' || d.state === 'hit' || d.delay > 0
-        || ['pass', 'approach', 'overfly', 'turn', 'flare'].includes(d.state) || (d.x > -160 * U && d.x < W + 160 * U && d.y > -140 * U)));
-      if (ducks.filter(d => d.state === 'swim').length > 7) evFlush();
+      prune(ducks, keepDuck);
+      let swimming = 0; for (const d of ducks) if (d.state === 'swim') swimming++;
+      if (swimming > 7) evFlush();
 
       for (const r of ripples) { r.r += dt * 3 * r.k; r.life -= dt * .45; }
-      ripples = ripples.filter(r => r.life > 0);
+      prune(ripples, alive);
       for (const p of drops) { p.vy += p.g * dt; p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt; }
-      drops = drops.filter(p => p.life > 0);
+      prune(drops, alive);
       for (const f of feathers) { f.vy += f.g * 2 * dt; f.vx *= 1 - dt * 2; f.vy *= 1 - dt * 2.5; f.x += f.vx * dt; f.y += f.vy * dt; f.rot += f.vr * dt; f.life -= dt; }
-      feathers = feathers.filter(f => f.life > 0);
+      prune(feathers, alive);
       for (const f of fx) f.life -= dt;
-      fx = fx.filter(f => f.life > 0);
+      prune(fx, alive);
       for (const c of clouds) { c.x += c.v * dt; if (c.x - c.w > W) c.x = -c.w; }
 
       // gun
       gun.m = clamp(gun.m + (gun.mounted ? 1 : -1) * dt / .25, 0, 1);
       const k = Math.min(1, dt * 22);
       gun.mx += (gun.ax - gun.mx) * k; gun.my += (gun.ay - gun.my) * k;
-      gun.hist.push([clock, gun.mx, gun.my]); while (gun.hist.length && gun.hist[0][0] < clock - .6) gun.hist.shift();
+      const he = gun.hist.length && gun.hist[0][0] < clock - .6 ? gun.hist.shift() : [0, 0, 0];   // recycle entries
+      he[0] = clock; he[1] = gun.mx; he[2] = gun.my; gun.hist.push(he);
       gun.recoil = Math.max(0, gun.recoil - dt * 6);
       for (const s of gun.smoke) { s.life -= dt; s.r += 14 * U * dt; s.x += 6 * U * dt; s.y -= 4 * U * dt; }
-      gun.smoke = gun.smoke.filter(s => s.life > 0);
+      prune(gun.smoke, alive);
       if (!gun.mounted && gun.shells < 3) {
         gun.reload += dt;
         if (gun.reload > .55) { gun.reload = 0; gun.shells++; A && A.click('load'); emitGun(); }
       }
 
-      A && A.updateWings(ducks.filter(d => d.delay <= 0 && !d.hidden && FLYING.has(d.state)), W);
     }
 
     /* ---------- drawing ---------- */
@@ -549,7 +584,7 @@
         const baseY = fg ? H + 4 : hy + 2 + b.my;
         const sway = (paused || opts.reducedMotion ? 0 : Math.sin(t * 1.25 + b.ph + b.x * .004) * (fg ? 3.5 : 1.2) * U) + b.lean * b.h;
         const tx = b.x + sway, ty = baseY - b.h;
-        ctx.strokeStyle = S(fg ? P.veg : M(P.veg, P.low, .3), b.sh * (fg ? .8 : 1));
+        ctx.strokeStyle = b.css;
         ctx.lineWidth = b.w;
         ctx.beginPath(); ctx.moveTo(b.x, baseY); ctx.quadraticCurveTo(b.x + sway * .25, baseY - b.h * .6, tx, ty); ctx.stroke();
         if (b.cat) { ctx.fillStyle = S(P.veg, .42); ctx.beginPath(); ctx.ellipse(tx - sway * .04, ty + 9 * U, b.w * 1.5, 7 * U, b.lean, 0, 6.28); ctx.fill(); }
@@ -624,7 +659,7 @@
     }
 
     function frontal(d, away, wingsOnly) {                              // head-on / tail-on view: wings spread across
-      const c = d.col, a = d.a, under = M(c.wing, c.white, .3);
+      const c = d.col, a = d.a, under = c.under;
       const wy = -1 - a * 10, ty = 2 - a * 24;
       for (const sx of [-1, 1]) {
         ctx.fillStyle = S(under, away ? .85 : 1);
@@ -664,29 +699,38 @@
       ctx.fillStyle = S(c.head); ctx.beginPath(); ctx.ellipse(19, 0, 4.5, 3, 0, 0, 6.28); ctx.fill();
     }
 
+    function withBlur(d, ga, fn, x, y) {          // previous wing poses, faint: film-like motion blur
+      if (d.pa == null || Math.abs(d.pa - d.a) <= .12) return;
+      const a0 = d.a; d.a = (d.pa + a0) / 2; ctx.globalAlpha = ga * .35; fn(d, x, y);
+      d.a = d.pa; ctx.globalAlpha = ga * .18; fn(d, x, y); d.a = a0; ctx.globalAlpha = ga;
+    }
     function drawDuck(d, t) {
       if (d.delay > 0 || d.hidden) return;
       ctx.save(); ctx.translate(d.x, d.y);
-      const facing = (d.state === 'swim' || d.state === 'dead') ? d.dir : (Math.sign(d.vx) || d.dir);
-      if (facing < 0) ctx.scale(-1, 1);
-      const sc = d.ppf * 2 * d.size / 55, zz = clamp((d.z - .33) / .67, 0, 1);
-      ctx.globalAlpha = .62 + .38 * zz;
+      let fx = (d.state === 'swim' || d.state === 'dead') ? d.dir : d.fx != null ? d.fx : (Math.sign(d.vx) || d.dir);
+      if (Math.abs(fx) < .12) fx = fx < 0 ? -.12 : .12;
+      ctx.scale(fx, 1);
+      const sc = d.ppf * 2 * d.size / 55, zz = clamp((d.z - .33) / .67, 0, 1), ga = .62 + .38 * zz;
+      ctx.globalAlpha = ga;
       if (d.state === 'swim') { ctx.scale(sc, sc); sitting(d); ctx.restore(); return; }
       if (d.state === 'dead') { ctx.scale(sc, sc); floating(d); ctx.restore(); return; }
       if (d.state === 'hit') { ctx.rotate(d.spin); ctx.scale(sc, sc); wing(d, true); body(d); wing(d, false); ctx.restore(); return; }
-      const blur = d.pa != null && Math.abs(d.pa - d.a) > .12, ga = ctx.globalAlpha;
-      const ghost = fn => { if (!blur) return; const a0 = d.a; d.a = (d.pa + d.a) / 2; ctx.globalAlpha = ga * .35; fn(); d.a = d.pa; ctx.globalAlpha = ga * .18; fn(); d.a = a0; ctx.globalAlpha = ga; };
-      if (d.state === 'pass' && Math.abs(d.los) > .8) {
-        ctx.rotate(clamp(d.vx / (base(d) + 1) * .5, -.35, .35)); ctx.scale(sc, sc);
-        ghost(() => frontal(d, d.los > 0, true)); frontal(d, d.los > 0); ctx.restore(); return;
+      const w = d.state === 'pass' ? smooth(.72, .88, Math.abs(d.los)) : 0, bob = d.bob || 0;
+      if (w > 0) {                                   // head-on / tail-on, fading in as the bird lines up with you
+        const g = ga * w;
+        ctx.save(); ctx.rotate(d.rS || 0); ctx.scale(sc, sc); ctx.translate(0, bob);
+        withBlur(d, g, frontal, d.los > 0, true); ctx.globalAlpha = g; frontal(d, d.los > 0);
+        ctx.restore();
       }
-      const b = base(d), fs = d.state === 'pass' ? Math.max(.5, Math.sqrt(1 - d.los * d.los)) : 1;   // quartering: foreshortened
-      let p = Math.atan2(d.vy, Math.max(Math.abs(d.vx), b * .5));
-      p = clamp(p, -1.1, .9);
-      if (d.state === 'flare') p = -.55;
-      if (d.state === 'approach' && d.s.whiffle && d.cup) p += Math.sin(t * 9 + d.wob) * .18;
-      ctx.rotate(p); ctx.scale(sc * fs, sc);
-      ghost(() => wing(d, true)); wing(d, true); body(d); ghost(() => wing(d, false)); wing(d, false);
+      if (w < 1) {                                   // profile, foreshortened when quartering
+        const g = ga * (1 - w), fs = d.state === 'pass' ? Math.max(.5, Math.sqrt(1 - d.los * d.los)) : 1;
+        let p = d.pS || 0;
+        if (d.state === 'approach' && d.s.whiffle && d.cw > .5) p += Math.sin(t * 9 + d.wob) * .18 * d.cw;
+        ctx.save(); ctx.rotate(p); ctx.scale(sc * fs, sc); ctx.translate(0, bob);
+        withBlur(d, g, wing, true); ctx.globalAlpha = g; wing(d, true); body(d);
+        withBlur(d, g, wing, false); ctx.globalAlpha = g; wing(d, false);
+        ctx.restore();
+      }
       ctx.restore();
     }
 
@@ -751,19 +795,26 @@
       ctx.fillStyle = 'rgba(255,255,255,.9)'; ctx.beginPath(); ctx.arc(tipX - .6 * U, tipY - .6 * U, .8 * U, 0, 6.28); ctx.fill();
     }
 
+    const onWater = [], inAir = [], wingList = [];
     function frame(now) {
       const raw = Math.min(.25, (now - last) / 1000); last = now;
       // vsync jitter (±2 ms) makes motion stutter; follow a smoothed frame interval, but catch up on real stalls
       dtS = raw > .05 ? raw : dtS + (raw - dtS) * .12;
       let dt = raw > .05 ? raw : dtS;
       const t = now / 1000;
-      if (!paused) while (dt > 1e-4) { const s = Math.min(dt, 1 / 60); update(s, t); dt -= s; }
+      if (!paused) {
+        while (dt > 1e-4) { const s = Math.min(dt, 1 / 60); update(s, t); dt -= s; }
+        if (A) { wingList.length = 0; for (const d of ducks) if (d.delay <= 0 && !d.hidden && FLYING.has(d.state)) wingList.push(d); A.updateWings(wingList, W); }
+      }
       if (bg) { ctx.drawImage(bg, 0, 0, W, H); drawClouds(); drawRipplesLines(paused ? 0 : t); }
       else { ctx.clearRect(0, 0, W, H); drawSky(); drawWater(paused ? 0 : t); }
-      ducks.filter(d => d.state === 'swim' || d.state === 'dead').sort((a, b) => a.z - b.z).forEach(d => drawDuck(d, t));
+      onWater.length = inAir.length = 0;
+      for (const d of ducks) (d.state === 'swim' || d.state === 'dead' ? onWater : inAir).push(d);
+      onWater.sort(byZ); inAir.sort(byZ);
+      for (const d of onWater) drawDuck(d, t);
       drawWaterFx();
       drawBlades(t, false);
-      ducks.filter(d => d.state !== 'swim' && d.state !== 'dead').sort((a, b) => a.z - b.z).forEach(d => drawDuck(d, t));
+      for (const d of inAir) drawDuck(d, t);
       drawFeathers();
       drawBlades(t, true);
       drawShotFx();
